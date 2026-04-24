@@ -1,0 +1,13 @@
+# Personal config with credentials and machine-specific paths — never commit this
+monitor_config.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# macOS
+.DS_Store
+
+# Logs
+*.log

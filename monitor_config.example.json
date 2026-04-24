@@ -1,0 +1,16 @@
+{
+  "watch_folders": [
+    "~/Library/Mobile Documents/com~apple~CloudDocs/YourWatchFolder"
+  ],
+  "calibre_library": "~/Documents/Calibre",
+  "content_server_url": "http://localhost:8080",
+  "content_server_username": "",
+  "content_server_password": "",
+  "calibredb": "/Applications/calibre.app/Contents/MacOS/calibredb",
+  "plugin_source": "~/Documents/ScriptForCalibre/FuriganaRuby_source",
+  "s2t_variant": "s2twp",
+  "log_file": "~/Library/Logs/calibre_monitor.log",
+  "done_folder": "_imported",
+  "extensions": [".epub", ".txt", ".pdf", ".mobi", ".fb2", ".djvu",
+                 ".azw3", ".rtf", ".chm", ".azw", ".acsm"]
+}
