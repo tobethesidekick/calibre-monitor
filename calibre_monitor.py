@@ -86,7 +86,7 @@ AUTO_CHINESE_ENABLED = _pref(_PP, 'auto_chinese_enabled', 'auto_s2t_enabled', de
 AUTO_CHINESE_DIR     = _pref(_PP, 'auto_chinese_direction','auto_s2t_direction', default='s2t')
 S2T_VARIANT          = _pref(_PP, 's2t_variant', 'auto_s2t_variant',
                               default=CONFIG.get('s2t_variant', 's2twp'))
-T2S_VARIANT          = _pref(_PP, 't2s_variant',                             default='t2s')
+T2S_VARIANT          = 't2s'   # T→S always produces standard Mainland Simplified
 AUTO_RUBY_ENABLED    = _pref(_PP, 'auto_ruby_enabled',                       default=False)
 AUTO_RUBY_LEVELS     = set(_pref(_PP, 'auto_ruby_levels', default=['N1', 'N2', 'N3']))
 
