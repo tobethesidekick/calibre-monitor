@@ -8,9 +8,18 @@
   "content_server_password": "",
   "calibredb": "/Applications/calibre.app/Contents/MacOS/calibredb",
   "plugin_source": "~/Documents/ScriptForCalibre/FuriganaRuby_source",
-  "s2t_variant": "s2twp",
   "log_file": "~/Library/Logs/calibre_monitor.log",
   "done_folder": "_imported",
   "extensions": [".epub", ".txt", ".pdf", ".mobi", ".fb2", ".djvu",
-                 ".azw3", ".rtf", ".chm", ".azw", ".acsm"]
+                 ".azw3", ".rtf", ".chm", ".azw", ".acsm"],
+
+  "keep_original": false,
+
+  "auto_chinese_enabled": true,
+  "auto_chinese_direction": "s2t",
+  "s2t_variant": "s2twp",
+  "t2s_variant": "t2s",
+
+  "auto_ruby_enabled": false,
+  "auto_ruby_levels": ["N1", "N2", "N3"]
 }
