@@ -1,22 +1,25 @@
 # Calibre Monitor
 
-A macOS background script that watches an iCloud folder for new ebook files and automatically imports them into Calibre. Simplified Chinese EPUB, TXT, and FB2 files are detected and converted to Traditional Chinese before import.
+A macOS background script that watches folders for new ebook files and automatically imports them into Calibre. Works alongside the [FuriganaRuby Calibre plugin](https://github.com/tobethesidekick/furigana-ruby) — all behaviour settings (watch folders, auto Chinese conversion, auto ruby, keep original) are configured inside Calibre's own Preferences panel and read from there at startup.
 
 ---
 
 ## Features
 
-- **Watches iCloud Drive folders** — works across multiple devices via iCloud sync
+- **Watches iCloud Drive or local folders** — works across multiple devices via iCloud sync
 - **Auto-imports** EPUB, TXT, PDF, MOBI, FB2, DJVU, AZW3, RTF, CHM, AZW, ACSM
-- **Simplified → Traditional Chinese conversion** for EPUB, TXT, FB2 using OpenCC
-  - Detects encoding automatically (UTF-8 and GBK/GB18030)
-  - Converts title/author metadata to Traditional Chinese too
-  - Fixes CHM titles (CHM internal metadata is often GBK-encoded and misread by Calibre)
+- **Auto Simplified ↔ Traditional Chinese conversion** for EPUB, TXT, FB2, HTML (configurable direction and variant)
+  - Detects script automatically (UTF-8 and GBK/GB18030 encoding support)
+  - Converts title/author metadata to match
+  - Fixes CHM titles (often GBK-encoded and misread by Calibre)
+- **Auto furigana (ruby) annotation** for Japanese EPUBs — adds furigana for the JLPT levels you choose (N1–N5 + Unlisted) via the FuriganaRuby plugin engine
+- **Keep original** — saves the unmodified file as `ORIGINAL_EPUB` format in Calibre before applying any conversion or annotation, so you can always recover the source
 - **Duplicate detection** — searches the library by title before adding; leaves duplicates in the watch folder for manual review
 - **Moves imported files** to an `_imported/` subfolder on success; errors and duplicates stay in the watch folder as a natural review queue
 - **Fallback logic** — tries Calibre's content server first (when Calibre is open), falls back to direct library access (when Calibre is closed)
-- **No double-processing** — deduplicates the iCloud-triggered filesystem events that fire twice for the same file
+- **No double-processing** — deduplicates filesystem events that fire twice for the same file
 - **macOS notifications** on success, duplicate, and error
+- **Settings live in Calibre** — configure everything from the FuriganaRuby plugin's Preferences panel; the monitor reads the plugin's JSON file at startup so there is no need to edit `monitor_config.json` for behaviour settings
 
 ---
 
@@ -135,6 +138,10 @@ launchctl list | grep calibremonitor
 
 All settings live in `monitor_config.json` (gitignored — never committed). Copy from `monitor_config.example.json` to get started.
 
+> **Behaviour settings** (`keep_original`, `auto_chinese_*`, `auto_ruby_*`) are read from the **FuriganaRuby plugin's JSON file** at startup. Configure them inside Calibre → Preferences → Plugins → FuriganaRuby → Customize plugin. You do not need to set them in `monitor_config.json` — values there act only as a fallback if the plugin file is absent.
+
+### Infrastructure keys (edit in `monitor_config.json`)
+
 | Key | Required | Default | Description |
 |-----|----------|---------|-------------|
 | `watch_folders` | ✅ | — | Array of folder paths to watch. Supports `~`. iCloud paths work: `~/Library/Mobile Documents/com~apple~CloudDocs/FolderName` |
@@ -143,13 +150,24 @@ All settings live in `monitor_config.json` (gitignored — never committed). Cop
 | `content_server_username` | — | `""` | Content server username. Required if "Require username and password" is enabled in Calibre's sharing preferences. |
 | `content_server_password` | — | `""` | Content server password. |
 | `calibredb` | — | `/Applications/calibre.app/Contents/MacOS/calibredb` | Path to the `calibredb` binary. Only change if Calibre is installed in a non-standard location. |
-| `plugin_source` | — | `""` | Path to the FuriganaRuby source folder containing `lang_detect.py` and `chinese_engine.py`. Required for Simplified Chinese detection and S→T conversion. |
-| `s2t_variant` | — | `s2twp` | OpenCC conversion variant. Options: `s2t`, `s2tw`, `s2twp` (recommended for Taiwan Traditional), `s2hk` (Hong Kong), `t2s`, `tw2s`, `tw2sp`, `hk2s`. |
+| `plugin_source` | — | `""` | Path to the FuriganaRuby source folder. Required for Chinese detection/conversion and auto ruby annotation. |
 | `log_file` | — | `~/Library/Logs/calibre_monitor.log` | Path to the rotating log file (2 MB max, 3 backups). |
 | `done_folder` | — | `_imported` | Subfolder name inside the watch folder where successfully imported files are moved. Set to `""` to disable moving. |
 | `extensions` | — | See below | Array of file extensions to watch. |
 
 **Default extensions:** `.epub`, `.txt`, `.pdf`, `.mobi`, `.fb2`, `.djvu`, `.azw3`, `.rtf`, `.chm`, `.azw`, `.acsm`
+
+### Behaviour keys (set via Calibre plugin UI — or fallback in `monitor_config.json`)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `keep_original` | `false` | Save the unmodified file as `ORIGINAL_EPUB` in Calibre before any conversion or annotation. |
+| `auto_chinese_enabled` | `false` | Enable automatic Simplified ↔ Traditional Chinese conversion on import. |
+| `auto_chinese_direction` | `"s2t"` | `"s2t"` (Simplified → Traditional) or `"t2s"` (Traditional → Simplified). |
+| `s2t_variant` | `"s2twp"` | OpenCC variant for S→T: `s2t`, `s2tw`, `s2twp` (Taiwan, recommended), `s2hk` (Hong Kong). |
+| `t2s_variant` | `"t2s"` | OpenCC variant for T→S: `t2s`, `tw2s`, `tw2sp`, `hk2s`. |
+| `auto_ruby_enabled` | `false` | Enable automatic furigana annotation for Japanese EPUBs on import. Requires `plugin_source`. |
+| `auto_ruby_levels` | `["N1","N2","N3"]` | JLPT levels to annotate. Valid values: `"N1"`, `"N2"`, `"N3"`, `"N4"`, `"N5"`, `"unlisted"`. |
 
 ### Calibre content server setup
 
@@ -203,6 +221,9 @@ The iCloud watch folder is shared automatically — no extra setup needed.
 ---
 
 ## Troubleshooting
+
+**Auto ruby or auto Chinese not triggering**
+The startup log line shows the active settings — check `~/Library/Logs/calibre_monitor.log` for a line like `keep_original=True  auto_chinese=True(s2t)  auto_ruby=True(...)`. If values are wrong, open the FuriganaRuby plugin preferences in Calibre, set the values, click OK, then restart the monitor (`launchctl unload` / `load`).
 
 **S→T conversion not triggering for TXT files**
 Check `monitor_config.json` — `plugin_source` must point to a folder containing `lang_detect.py` and `chinese_engine.py`. Check the log for `No module named 'lang_detect'`.
