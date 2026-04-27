@@ -1,11 +1,14 @@
 # Calibre Monitor
 
-A macOS background script that watches folders for new ebook files and automatically imports them into Calibre. Works alongside the [FuriganaRuby Calibre plugin](https://github.com/tobethesidekick/furigana-ruby) — all behaviour settings (watch folders, auto Chinese conversion, auto ruby, keep original) are configured inside Calibre's own Preferences panel and read from there at startup.
+A macOS background service that watches folders for new ebook files and automatically imports them into Calibre — **even while Calibre is closed**. Works alongside the [FuriganaRuby Calibre plugin](https://github.com/tobethesidekick/furigana-ruby) — all behaviour settings (watch folders, auto Chinese conversion, auto ruby, keep original) are configured inside Calibre's own Preferences panel and read from there at startup.
+
+> **Why a separate script?** Running as a macOS LaunchAgent means the monitor starts at login and keeps watching in the background regardless of whether Calibre is open. This is the key advantage over a built-in plugin, which can only watch while the app is running. If you use iCloud Drive to sync books across devices, files can arrive at any time — the monitor picks them up immediately.
 
 ---
 
 ## Features
 
+- **Runs while Calibre is closed** — starts at login as a macOS LaunchAgent; no need to keep Calibre open
 - **Watches iCloud Drive or local folders** — works across multiple devices via iCloud sync
 - **Auto-imports** EPUB, TXT, PDF, MOBI, FB2, DJVU, AZW3, RTF, CHM, AZW, ACSM
 - **Auto Simplified ↔ Traditional Chinese conversion** for EPUB, TXT, FB2, HTML (configurable direction and variant)
