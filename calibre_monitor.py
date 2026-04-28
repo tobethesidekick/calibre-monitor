@@ -533,13 +533,19 @@ class BookHandler(FileSystemEventHandler):
 
             # ── Move to done folder ───────────────────────────────
             if DONE_FOLDER:
-                done_dir = p.parent / DONE_FOLDER
-                done_dir.mkdir(exist_ok=True)
-                dest = done_dir / p.name
-                if dest.exists():
-                    dest = done_dir / f'{p.stem}_{int(time.time())}{p.suffix}'
-                shutil.move(path, dest)
-                log.info(f'Moved to {DONE_FOLDER}/: {p.name}')
+                try:
+                    done_dir = p.parent / DONE_FOLDER
+                    done_dir.mkdir(exist_ok=True)
+                    dest = done_dir / p.name
+                    if dest.exists():
+                        dest = done_dir / f'{p.stem}_{int(time.time())}{p.suffix}'
+                    shutil.move(path, dest)
+                    log.info(f'Moved to {DONE_FOLDER}/: {p.name}')
+                except FileNotFoundError:
+                    if dest.exists():
+                        log.info(f'Moved to {DONE_FOLDER}/: {p.name} (iCloud completed move)')
+                    else:
+                        log.warning(f'Could not move to {DONE_FOLDER}/ (file no longer local — iCloud eviction?): {p.name}')
 
             notify('Calibre Monitor ✅', f'{action}: {p.name}')
 
