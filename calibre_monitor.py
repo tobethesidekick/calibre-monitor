@@ -255,7 +255,9 @@ def calibredb_add(path):
             log.debug(f'calibredb connected via {via}')
             return (result.stdout + result.stderr).strip()
         combined = (result.stdout + result.stderr).lower()
-        if 'another calibre program' in combined or 'cannot lock' in combined:
+        if any(s in combined for s in (
+                'another calibre program', 'cannot lock',
+                'connection refused', 'urlopen error', 'errno 61')):
             continue
         raise RuntimeError((result.stdout + result.stderr).strip())
     raise RuntimeError('Could not connect to Calibre — tried content server and direct access')
@@ -287,7 +289,9 @@ def calibredb_add_format(book_id, format_name, file_path):
             if result.returncode == 0:
                 return
             combined = (result.stdout + result.stderr).lower()
-            if 'another calibre program' in combined or 'cannot lock' in combined:
+            if any(s in combined for s in (
+                    'another calibre program', 'cannot lock',
+                    'connection refused', 'urlopen error', 'errno 61')):
                 continue
             raise RuntimeError((result.stdout + result.stderr).strip())
         raise RuntimeError('Could not connect to Calibre for add_format')
@@ -308,7 +312,9 @@ def calibredb_set_metadata(book_id, **fields):
         if result.returncode == 0:
             return
         combined = (result.stdout + result.stderr).lower()
-        if 'another calibre program' in combined or 'cannot lock' in combined:
+        if any(s in combined for s in (
+                'another calibre program', 'cannot lock',
+                'connection refused', 'urlopen error', 'errno 61')):
             continue
         raise RuntimeError((result.stdout + result.stderr).strip())
 
@@ -371,7 +377,9 @@ def calibredb_title_exists(title):
         if result.returncode == 0 and result.stdout.strip():
             return True
         combined = (result.stdout + result.stderr).lower()
-        if 'another calibre program' in combined or 'cannot lock' in combined:
+        if any(s in combined for s in (
+                'another calibre program', 'cannot lock',
+                'connection refused', 'urlopen error', 'errno 61')):
             continue
         return False
     return False
