@@ -12,6 +12,7 @@ import time
 import shutil
 import logging
 import tempfile
+import zipfile
 import threading
 import subprocess
 from logging.handlers import RotatingFileHandler
@@ -388,16 +389,30 @@ def calibredb_title_exists(title):
 # ── File stability ────────────────────────────────────────────────────────────
 
 def wait_for_stable(path, timeout=120, interval=2.0):
-    deadline  = time.time() + timeout
-    last_size = -1
+    deadline      = time.time() + timeout
+    last_size     = -1
+    stable_streak = 0
+    is_epub       = str(path).lower().endswith('.epub')
+
     while time.time() < deadline:
         try:
             size = os.path.getsize(path)
             if size > 0 and size == last_size:
-                return True
-            last_size = size
+                stable_streak += 1
+                if stable_streak >= 2:
+                    if not is_epub:
+                        return True
+                    try:
+                        with zipfile.ZipFile(path, 'r') as zf:
+                            zf.namelist()
+                        return True
+                    except Exception:
+                        stable_streak = 0  # ZIP central directory not written yet
+            else:
+                stable_streak = 0
+                last_size = size
         except OSError:
-            pass
+            stable_streak = 0
         time.sleep(interval)
     return False
 
