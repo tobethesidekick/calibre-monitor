@@ -90,6 +90,8 @@ S2T_VARIANT          = _pref(_PP, 's2t_variant', 'auto_s2t_variant',
 T2S_VARIANT          = 't2s'   # T→S always produces standard Mainland Simplified
 AUTO_RUBY_ENABLED    = _pref(_PP, 'auto_ruby_enabled',                       default=False)
 AUTO_RUBY_LEVELS     = set(_pref(_PP, 'auto_ruby_levels', default=['N1', 'N2', 'N3']))
+AUTO_ENGINE          = _pref(_PP, 'auto_engine',                             default='enhanced')
+INCLUDE_VIEWER_TOGGLE = bool(_pref(_PP, 'include_viewer_toggle',             default=False))
 
 CHINESE_EXTS = {'.epub', '.fb2', '.txt', '.html', '.htm'}
 
@@ -212,6 +214,57 @@ def convert_chinese(src_path, variant):
 
 # ── Ruby annotation ───────────────────────────────────────────────────────────
 
+_RUBY_ENGINE = None
+_RUBY_ENGINE_RESOLVED = False
+
+
+def _get_ruby_engine():
+    """
+    Resolve the furigana engine per the plugin's auto_engine setting, walking
+    the plugin's fallback chain (high_accuracy → enhanced → standard) if the
+    preferred engine is unavailable. Resolved once and cached — the Sudachi
+    engine keeps a subprocess daemon alive, so one instance serves all books.
+    Returns None to let furigana_engine use its built-in pykakasi path.
+    Must be called after ensure_deps() — engine availability checks need
+    the bundled deps importable.
+    """
+    global _RUBY_ENGINE, _RUBY_ENGINE_RESOLVED
+    if _RUBY_ENGINE_RESOLVED:
+        return _RUBY_ENGINE
+    _RUBY_ENGINE_RESOLVED = True
+    try:
+        if AUTO_ENGINE == 'high_accuracy':
+            # SudachiEngine.is_available() gates on the ABI of Calibre's
+            # embedded Python, which never matches the monitor's system
+            # Python — so outside Calibre it always reports unavailable.
+            # Sudachi actually runs in a system-Python subprocess either
+            # way, so a live tokenize probe is the real availability test.
+            try:
+                from engines.sudachi import SudachiEngine
+                eng = SudachiEngine()
+                if eng.tokenize('日本語'):
+                    _RUBY_ENGINE = eng
+                    return _RUBY_ENGINE
+                log.warning('High-accuracy engine returned no output — '
+                            'falling back to Enhanced')
+            except Exception as e:
+                log.warning(f'High-accuracy engine unavailable ({e}) — '
+                            f'falling back to Enhanced')
+        from engine_registry import resolve_engine, _ensure_all_registered
+        _ensure_all_registered()
+        preferred = 'enhanced' if AUTO_ENGINE == 'high_accuracy' else AUTO_ENGINE
+        engine, actual_id = resolve_engine(preferred)
+        if engine is not None and actual_id != preferred:
+            log.warning(f'Furigana engine "{preferred}" unavailable — '
+                        f'falling back to "{actual_id}"')
+        _RUBY_ENGINE = engine
+    except Exception as e:
+        log.warning(f'Could not resolve furigana engine "{AUTO_ENGINE}" ({e}) '
+                    f'— using built-in Enhanced')
+        _RUBY_ENGINE = None
+    return _RUBY_ENGINE
+
+
 def add_ruby_to_epub(src_path, levels):
     """
     Add furigana to a Japanese EPUB.
@@ -235,7 +288,9 @@ def add_ruby_to_epub(src_path, levels):
     tmp = os.path.join(tmp_dir, src.name)
     try:
         from furigana_engine import process_epub_file
-        process_epub_file(src_path, tmp, mode='add', annotate_levels=list(levels))
+        process_epub_file(src_path, tmp, mode='add', annotate_levels=list(levels),
+                          engine=_get_ruby_engine(),
+                          include_toggle=INCLUDE_VIEWER_TOGGLE)
         return tmp_dir, tmp
     except Exception:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -598,7 +653,8 @@ def main():
     log.info(f'Extensions: {", ".join(sorted(WATCH_EXTS))}')
     log.info(f'keep_original={KEEP_ORIGINAL}  '
              f'auto_chinese={AUTO_CHINESE_ENABLED}({AUTO_CHINESE_DIR})  '
-             f'auto_ruby={AUTO_RUBY_ENABLED}({sorted(AUTO_RUBY_LEVELS)})')
+             f'auto_ruby={AUTO_RUBY_ENABLED}({sorted(AUTO_RUBY_LEVELS)})  '
+             f'engine={AUTO_ENGINE}  viewer_toggle={INCLUDE_VIEWER_TOGGLE}')
     notify('Calibre Monitor', f'Started — watching {watched} folder(s)')
 
     observer.start()
