@@ -130,6 +130,48 @@ def notify(title, message):
         pass
 
 
+# ── Startup sanity checks ──────────────────────────────────────────────────────
+
+def _calibre_gui_library_path():
+    """Read the library path Calibre's own GUI currently has open."""
+    if sys.platform == 'darwin':
+        p = Path.home() / 'Library/Preferences/calibre/global.py.json'
+    elif sys.platform.startswith('linux'):
+        p = Path.home() / '.config/calibre/global.py.json'
+    else:
+        p = Path.home() / 'AppData/Roaming/calibre/global.py.json'
+    try:
+        with open(p) as f:
+            return json.load(f).get('library_path')
+    except Exception:
+        return None
+
+
+def check_library_sanity():
+    """
+    Warn (don't exit — a deliberate secondary library is legitimate) if the
+    configured calibre_library doesn't match the library Calibre's GUI opens.
+    A silent mismatch means closed-Calibre imports go via calibredb straight
+    into a library the user never sees.
+    """
+    gui_library = _calibre_gui_library_path()
+    if gui_library:
+        configured = os.path.realpath(CALIBRE_LIB)
+        actual     = os.path.realpath(os.path.expanduser(gui_library))
+        if configured != actual:
+            log.warning(
+                f'Configured library ({configured}) != library Calibre opens ({actual}) — '
+                'closed-Calibre imports will go to a library you never see! '
+                'Fix calibre_library in monitor_config.json.'
+            )
+
+    if not os.path.isfile(os.path.join(CALIBRE_LIB, 'metadata.db')):
+        log.warning(
+            f'Configured library has no metadata.db ({CALIBRE_LIB}) — '
+            'calibredb may silently create a new empty library here.'
+        )
+
+
 # ── Plugin source (lang_detect, chinese_engine, furigana_engine) ──────────────
 
 _plugin_src = os.path.expanduser(CONFIG.get('plugin_source', ''))
@@ -450,6 +492,8 @@ def wait_for_stable(path, timeout=120, interval=2.0):
     is_epub       = str(path).lower().endswith('.epub')
 
     while time.time() < deadline:
+        if not os.path.exists(path):
+            return None  # vanished mid-wait — not a timeout, nothing to import
         try:
             size = os.path.getsize(path)
             if size > 0 and size == last_size:
@@ -502,6 +546,12 @@ class BookHandler(FileSystemEventHandler):
         if os.path.realpath(str(p.parent)) not in WATCH_FOLDERS_REAL:
             return
 
+        if not os.path.exists(path):
+            # The move into DONE_FOLDER can emit a spurious event for the
+            # original path (FSEvents coalescing on macOS) — ignore it
+            # silently rather than logging a phantom "Detected".
+            return
+
         canonical = str(p.resolve())
         with self._lock:
             if canonical in self._in_progress:
@@ -512,7 +562,11 @@ class BookHandler(FileSystemEventHandler):
 
         tmp_dir = None
         try:
-            if not wait_for_stable(path):
+            stable = wait_for_stable(path)
+            if stable is None:
+                log.info(f'Skipped (file no longer present): {p.name}')
+                return
+            if not stable:
                 log.error(f'Timed out waiting for file to finish: {p.name}')
                 notify('Calibre Monitor ⚠️', f'Timeout — {p.name}')
                 return
@@ -633,6 +687,8 @@ class BookHandler(FileSystemEventHandler):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    check_library_sanity()
+
     observer = Observer()
     handler  = BookHandler()
     watched  = 0
