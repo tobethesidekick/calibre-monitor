@@ -422,6 +422,141 @@ def parse_added_id(output):
     return int(m.group(1)) if m else None
 
 
+def calibredb_export(book_id, dest_dir):
+    """Export a book's format file(s) into dest_dir (flat, no OPF/cover)."""
+    for library in [CONTENT_SERVER_URL, CALIBRE_LIB]:
+        cmd = [CALIBREDB, 'export', '--with-library', library,
+               '--single-dir', '--to-dir', dest_dir,
+               '--dont-write-opf', '--dont-save-cover', '--dont-save-extra-files']
+        if library == CONTENT_SERVER_URL and CONTENT_SERVER_USER:
+            cmd += ['--username', CONTENT_SERVER_USER, '--password', CONTENT_SERVER_PASS]
+        cmd.append(str(book_id))
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode == 0:
+            return
+        combined = (result.stdout + result.stderr).lower()
+        if any(s in combined for s in (
+                'another calibre program', 'cannot lock',
+                'connection refused', 'urlopen error', 'errno 61')):
+            continue
+        raise RuntimeError((result.stdout + result.stderr).strip())
+    raise RuntimeError('Could not connect to Calibre for export')
+
+
+def calibredb_get_fields(book_id, fields):
+    """Return a dict of the requested metadata fields for book_id."""
+    for library in [CONTENT_SERVER_URL, CALIBRE_LIB]:
+        cmd = [CALIBREDB, 'list', '--with-library', library,
+               '--search', f'id:{book_id}', '--fields', ','.join(fields),
+               '--for-machine']
+        if library == CONTENT_SERVER_URL and CONTENT_SERVER_USER:
+            cmd += ['--username', CONTENT_SERVER_USER, '--password', CONTENT_SERVER_PASS]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            rows = json.loads(result.stdout)
+            return rows[0] if rows else {}
+        combined = (result.stdout + result.stderr).lower()
+        if any(s in combined for s in (
+                'another calibre program', 'cannot lock',
+                'connection refused', 'urlopen error', 'errno 61')):
+            continue
+        raise RuntimeError((result.stdout + result.stderr).strip())
+    raise RuntimeError('Could not connect to Calibre for list')
+
+
+def process_fulfilled_acsm(book_id, source_name):
+    """
+    DeACSM fulfills a .acsm loan *inside* `calibredb add`, so the
+    Chinese-conversion / auto-ruby checks in _process() — gated on the
+    pre-fulfillment '.acsm' extension — never see the real fulfilled
+    format. Export what Calibre actually stored, run the same conversion
+    pipeline against it, and write back the file plus the title/comments
+    metadata (which came from the loan's own, still-simplified OPF).
+    Returns a list of action labels (e.g. ['S→T (s2twp)']), empty if
+    nothing needed to change.
+    """
+    export_dir = tempfile.mkdtemp()
+    tmp_dir = None
+    try:
+        calibredb_export(book_id, export_dir)
+        exported = [f for f in Path(export_dir).iterdir() if f.is_file()]
+        if not exported:
+            return []
+        fulfilled_path = str(exported[0])
+        fulfilled_ext  = Path(fulfilled_path).suffix.lower()
+
+        add_path        = fulfilled_path
+        chinese_variant = None
+        action_parts    = []
+
+        if AUTO_CHINESE_ENABLED and fulfilled_ext in CHINESE_EXTS:
+            script  = detect_chinese_script(fulfilled_path)
+            variant = None
+            if script == 'simplified' and AUTO_CHINESE_DIR == 's2t':
+                variant = S2T_VARIANT
+                direction_label = f'S→T ({variant})'
+            elif script == 'traditional' and AUTO_CHINESE_DIR == 't2s':
+                variant = T2S_VARIANT
+                direction_label = f'T→S ({variant})'
+
+            if variant:
+                tmp_dir, add_path = convert_chinese(fulfilled_path, variant)
+                chinese_variant   = variant
+                action_parts.append(direction_label)
+
+        if AUTO_RUBY_ENABLED and fulfilled_ext == '.epub' and AUTO_RUBY_LEVELS:
+            try:
+                ruby_tmp_dir, ruby_path = add_ruby_to_epub(add_path, AUTO_RUBY_LEVELS)
+                if ruby_path:
+                    if tmp_dir:
+                        shutil.rmtree(tmp_dir, ignore_errors=True)
+                    tmp_dir   = ruby_tmp_dir
+                    add_path  = ruby_path
+                    levels_str = '+'.join(
+                        l for l in ['N1', 'N2', 'N3', 'N4', 'N5', 'unlisted']
+                        if l in AUTO_RUBY_LEVELS
+                    )
+                    action_parts.append(f'ruby ({levels_str})')
+            except Exception as e:
+                log.warning(f'Auto-ruby failed for {source_name} (post-fulfillment): {e}')
+
+        if not action_parts:
+            return []
+
+        if KEEP_ORIGINAL and fulfilled_ext == '.epub':
+            try:
+                calibredb_add_format(book_id, 'ORIGINAL_EPUB', fulfilled_path)
+                log.info(f'Saved ORIGINAL_EPUB for book {book_id}')
+            except Exception as e:
+                log.warning(f'Could not save ORIGINAL_EPUB: {e}')
+
+        calibredb_add_format(book_id, fulfilled_ext.lstrip('.').upper(), add_path)
+
+        if chinese_variant:
+            try:
+                from chinese_engine import convert_string_s2t
+                current = calibredb_get_fields(book_id, ['title', 'comments'])
+                updates = {}
+                for field in ('title', 'comments'):
+                    val = current.get(field)
+                    if val:
+                        conv = convert_string_s2t(val, variant=chinese_variant)
+                        if conv != val:
+                            updates[field] = conv
+                if updates:
+                    calibredb_set_metadata(book_id, **updates)
+                    if 'title' in updates:
+                        log.info(f'Converted title: "{current["title"]}" → "{updates["title"]}"')
+            except Exception as e:
+                log.warning(f'Could not convert metadata for book {book_id}: {e}')
+
+        return action_parts
+    finally:
+        shutil.rmtree(export_dir, ignore_errors=True)
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 # ── Title helpers ─────────────────────────────────────────────────────────────
 
 def title_from_path(path):
@@ -654,6 +789,18 @@ class BookHandler(FileSystemEventHandler):
                         log.info(f'Converted TXT/FB2 title: "{simp_title}" → "{conv_title}"')
                 except Exception as me:
                     log.warning(f'Could not convert TXT/FB2 title: {me}')
+
+            # ACSM: DeACSM fulfills the loan inside calibredb_add() above, so
+            # the Chinese-conversion/ruby checks earlier in this function
+            # (gated on the still-'.acsm' extension) never ran. Now that the
+            # real fulfilled format exists in the library, process it.
+            if ext == '.acsm' and book_id:
+                try:
+                    acsm_actions = process_fulfilled_acsm(book_id, p.name)
+                    if acsm_actions:
+                        log.info(f'{" + ".join(acsm_actions)} (post-fulfillment): {p.name}')
+                except Exception as me:
+                    log.warning(f'Post-fulfillment processing failed for book {book_id}: {me}')
 
             # ── Move to done folder ───────────────────────────────
             if DONE_FOLDER:
