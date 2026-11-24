@@ -464,6 +464,112 @@ def calibredb_get_fields(book_id, fields):
     raise RuntimeError('Could not connect to Calibre for list')
 
 
+# ── TXT author detection ──────────────────────────────────────────────────────
+
+_AUTHOR_BODY = r'([^\s/\\『』》」）)(（\]】,，。；;:：<>|“”"\'_]{1,30})'
+_AUTHOR_HDR_RE = re.compile(r'作\s*者(?:名)?\s*[:：]\s*' + _AUTHOR_BODY)
+_AUTHOR_BY_RE  = re.compile(r'(?:^|[\s》」])[Bb][Yy]\s*' + _AUTHOR_BODY)
+_AUTHOR_JUNK   = {'unknown', 'bl', '未知', '佚名', '不详', '网络', '网络小说'}
+
+
+def _clean_author(a):
+    a = (a or '').strip(' \t\u3000-—')
+    if not a or a.lower() in _AUTHOR_JUNK or re.fullmatch(r'[0-9a-fA-F]{32}', a):
+        return None   # empty, placeholder, or an Anna's Archive md5
+    return a
+
+
+def detect_txt_author(path):
+    """
+    Best-effort author for a TXT whose Calibre author would be 'Unknown'.
+    Priority: (1) '作者：X' / '本书作者: X' in the first lines of the file,
+    (2) '作者：X' in the filename, (3) 'by X' in the filename,
+    (4) 'title -- author -- ...' filename pattern.  Returns a string or None.
+    If sources disagree, the first wins and the conflict is logged.
+    """
+    found = []
+    try:
+        head = _read_text_sample(path)[:4000]
+        for line in head.splitlines():
+            m = _AUTHOR_HDR_RE.search(line)
+            if m and _clean_author(m.group(1)):
+                found.append(('content', _clean_author(m.group(1))))
+                break
+    except Exception as e:
+        log.debug(f'Author detection (content) failed for {Path(path).name}: {e}')
+
+    stem = Path(path).stem
+    try:
+        from urllib.parse import unquote
+        stem = unquote(stem)
+    except Exception:
+        pass
+    m = _AUTHOR_HDR_RE.search(stem)
+    if m and _clean_author(m.group(1)):
+        found.append(('filename', _clean_author(re.sub(r'_\d{6,}$', '', m.group(1)))))
+    m = _AUTHOR_BY_RE.search(stem)
+    if m and _clean_author(m.group(1)):
+        found.append(('filename-by', _clean_author(m.group(1))))
+    parts = [x.strip() for x in stem.split(' -- ')]
+    if len(parts) >= 3 and _clean_author(parts[1]):
+        found.append(('filename-segment', _clean_author(parts[1])))
+
+    found = [(src, a) for src, a in found if a]
+    if not found:
+        return None
+    if len({a for _, a in found}) > 1:
+        log.info(f'Author sources disagree for {Path(path).name}: {found} — using {found[0][1]}')
+    return found[0][1]
+
+
+def apply_detected_author(book_id, path, chinese_variant, name):
+    """Set authors/author_sort from detect_txt_author when Calibre has none."""
+    try:
+        current = calibredb_get_fields(book_id, ['authors']).get('authors') or []
+        if isinstance(current, str):
+            current = [current]
+        if current and any(a.strip().lower() not in ('', 'unknown') for a in current):
+            return False
+        author = detect_txt_author(path)
+        if not author:
+            log.info(f'No author detected: {name}')
+            return False
+        if chinese_variant:
+            from chinese_engine import convert_string_s2t
+            author = convert_string_s2t(author, variant=chinese_variant)
+        calibredb_set_metadata(book_id, authors=author, author_sort=author)
+        log.info(f'Set author → "{author}": {name}')
+        return True
+    except Exception as e:
+        log.warning(f'Could not set author for book {book_id}: {e}')
+        return False
+
+
+def ensure_chinese_language(book_id, name):
+    """
+    Calibre tags TXT (and some other) imports as English by default, and
+    Kindle/AZW3 output then uses the Latin layout + built-in CJK fallback
+    font. If the book was detected as Chinese and its language is empty or
+    English/undetermined, set it to 'zho'. Never overwrites an existing
+    zh*/other-language tag. Failures are logged, never fatal.
+    """
+    try:
+        langs = calibredb_get_fields(book_id, ['languages']).get('languages') or []
+        if isinstance(langs, str):
+            langs = [langs]
+        langs = [l.lower() for l in langs]
+        if any(l.startswith(('zh', 'chi')) for l in langs):
+            return False
+        if langs and not all(l in ('eng', 'en', 'und') for l in langs):
+            return False   # deliberately tagged some other language — leave it
+        calibredb_set_metadata(book_id, languages='zho')
+        log.info(f'Set language → zho (was {langs or "empty"}): {name}')
+        return True
+    except Exception as e:
+        log.warning(f'Could not set Chinese language for book {book_id}: {e}')
+        return False
+
+
 def process_fulfilled_acsm(book_id, source_name):
     """
     DeACSM fulfills a .acsm loan *inside* `calibredb add`, so the
@@ -489,8 +595,12 @@ def process_fulfilled_acsm(book_id, source_name):
         chinese_variant = None
         action_parts    = []
 
+        script = None
+        if fulfilled_ext in CHINESE_EXTS:
+            script = detect_chinese_script(fulfilled_path)
+            if script:
+                ensure_chinese_language(book_id, source_name)
         if AUTO_CHINESE_ENABLED and fulfilled_ext in CHINESE_EXTS:
-            script  = detect_chinese_script(fulfilled_path)
             variant = None
             if script == 'simplified' and AUTO_CHINESE_DIR == 's2t':
                 variant = S2T_VARIANT
@@ -543,6 +653,8 @@ def process_fulfilled_acsm(book_id, source_name):
                         conv = convert_string_s2t(val, variant=chinese_variant)
                         if conv != val:
                             updates[field] = conv
+                if 'title' in updates:
+                    updates['sort'] = updates['title']   # keep Title Sort consistent
                 if updates:
                     calibredb_set_metadata(book_id, **updates)
                     if 'title' in updates:
@@ -711,8 +823,10 @@ class BookHandler(FileSystemEventHandler):
             action_parts     = []
 
             # ── Chinese conversion ────────────────────────────────
-            if AUTO_CHINESE_ENABLED and ext in CHINESE_EXTS:
+            script = None   # 'simplified' | 'traditional' | None (any Chinese)
+            if ext in CHINESE_EXTS:
                 script = detect_chinese_script(path)
+            if AUTO_CHINESE_ENABLED and ext in CHINESE_EXTS:
                 variant = None
                 if script == 'simplified' and AUTO_CHINESE_DIR == 's2t':
                     variant = S2T_VARIANT
@@ -769,6 +883,15 @@ class BookHandler(FileSystemEventHandler):
 
             # ── Post-import metadata fixes ────────────────────────
 
+            # Chinese book with empty/English language tag → tag as zho so
+            # later AZW3 conversion uses CJK layout/fonts on Kindle
+            if script and book_id:
+                ensure_chinese_language(book_id, p.name)
+
+            # TXT has no metadata — try to find the author in the file/filename
+            if ext == '.txt' and book_id:
+                apply_detected_author(book_id, path, chinese_variant, p.name)
+
             # CHM: title is often GBK-encoded internally; override with filename
             if ext == '.chm':
                 clean = title_from_path(path)
@@ -785,7 +908,8 @@ class BookHandler(FileSystemEventHandler):
                     simp_title = title_from_path(path)
                     conv_title = convert_string_s2t(simp_title, variant=chinese_variant)
                     if conv_title != simp_title:
-                        calibredb_set_metadata(book_id, title=conv_title)
+                        # Set Title Sort too: Calibre doesn't reliably re-derive it
+                        calibredb_set_metadata(book_id, title=conv_title, sort=conv_title)
                         log.info(f'Converted TXT/FB2 title: "{simp_title}" → "{conv_title}"')
                 except Exception as me:
                     log.warning(f'Could not convert TXT/FB2 title: {me}')
